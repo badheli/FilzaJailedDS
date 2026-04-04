@@ -204,6 +204,38 @@ static id hook_unZipFilePassword(id self, SEL _cmd, id zipPath, id toPath, id cu
     return hook_unZipFile(self, @selector(unZipFile:toPath:currentDirectory:outMessage:), zipPath, toPath, currentDir, outMsg);
 }
 
+#pragma mark - License / Integrity Bypass
+
+// Suppress "Main binary was modified" and "Not activated" alerts.
+// +[TGAlertController showAlertWithTitle:text:cancelButton:otherButtons:completion:]
+// checks the text parameter; if it's the integrity/activation alert, swallow it.
+static IMP orig_showAlert = NULL;
+static id hook_showAlertWithTitle(id self, SEL _cmd, id title, id text, id cancelButton, id otherButtons, id completion) {
+    NSString *textStr = text;
+    if ([textStr isKindOfClass:[NSString class]]) {
+        if ([textStr containsString:@"binary was modified"] ||
+            [textStr containsString:@"reinstall Filza"]) {
+            NSLog(@"[Tweak] Suppressed integrity alert");
+            return nil;
+        }
+    }
+    // Pass through all other alerts
+    return ((id(*)(id,SEL,id,id,id,id,id))orig_showAlert)(self, _cmd, title, text, cancelButton, otherButtons, completion);
+}
+
+// Suppress activation nag: -[NewActivationViewController viewDidLoad]
+// Just dismiss the VC immediately so the user never sees it.
+static IMP orig_activationViewDidLoad = NULL;
+static void hook_activationViewDidLoad(id self, SEL _cmd) {
+    // Call original to set up the VC, then immediately dismiss
+    ((void(*)(id,SEL))orig_activationViewDidLoad)(self, _cmd);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ((void(*)(id,SEL,BOOL,id))objc_msgSend)(self,
+            NSSelectorFromString(@"dismissViewControllerAnimated:completion:"), NO, nil);
+    });
+    NSLog(@"[Tweak] Suppressed activation nag");
+}
+
 #pragma mark - Hook Installation
 
 static void installHooks(void) {
@@ -233,6 +265,27 @@ static void installHooks(void) {
         m = class_getInstanceMethod(zipper, NSSelectorFromString(@"unZipFile:toPath:currentDirectory:withPassword:outMessage:"));
         if (m) { orig_unZipFilePassword = method_getImplementation(m); method_setImplementation(m, (IMP)hook_unZipFilePassword); }
     }
+
+    // License/integrity bypass
+    Class alertCtrl = NSClassFromString(@"TGAlertController");
+    if (alertCtrl) {
+        Class alertMeta = object_getClass(alertCtrl);
+        Method m = class_getClassMethod(alertCtrl, NSSelectorFromString(@"showAlertWithTitle:text:cancelButton:otherButtons:completion:"));
+        if (m) {
+            orig_showAlert = method_getImplementation(m);
+            class_replaceMethod(alertMeta, NSSelectorFromString(@"showAlertWithTitle:text:cancelButton:otherButtons:completion:"),
+                (IMP)hook_showAlertWithTitle, "@@:@@@@@");
+        }
+    }
+    Class activationVC = NSClassFromString(@"NewActivationViewController");
+    if (activationVC) {
+        Method m = class_getInstanceMethod(activationVC, @selector(viewDidLoad));
+        if (m) {
+            orig_activationViewDidLoad = method_getImplementation(m);
+            method_setImplementation(m, (IMP)hook_activationViewDidLoad);
+        }
+    }
+
     NSLog(@"[Tweak] All hooks installed");
 }
 
